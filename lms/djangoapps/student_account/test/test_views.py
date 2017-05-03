@@ -287,8 +287,8 @@ class StudentAccountLoginAndRegistrationTest(ThirdPartyAuthTestMixin, UrlResetMi
     def setUp(self):
         super(StudentAccountLoginAndRegistrationTest, self).setUp()
 
-        # For these tests, three third party auth providers are enabled by default:
-        self.configure_google_provider(enabled=True, visible=True)
+        # Several third party auth providers are created for these tests:
+        self.google_provider = self.configure_google_provider(enabled=True, visible=True)
         self.configure_facebook_provider(enabled=True, visible=True)
         self.configure_dummy_provider(
             visible=True,
@@ -296,6 +296,11 @@ class StudentAccountLoginAndRegistrationTest(ThirdPartyAuthTestMixin, UrlResetMi
             icon_class='',
             icon_image=SimpleUploadedFile('icon.svg', '<svg><rect width="50" height="100"/></svg>'),
         )
+        self.hidden_enabled_provider = self.configure_linkedin_provider(
+            visible=False,
+            enabled=True,
+        )
+        self.hidden_disabled_provider = self.configure_azure_ad_provider()
 
     @ddt.data(
         ("signin_user", "login"),
@@ -425,6 +430,28 @@ class StudentAccountLoginAndRegistrationTest(ThirdPartyAuthTestMixin, UrlResetMi
         params = [("next", "/courses/something/?tpa_hint=oa2-google-oauth2")]
         response = self.client.get(reverse('signin_user'), params)
         self.assertContains(response, '"third_party_auth_hint": "oa2-google-oauth2"')
+
+        tpa_hint = self.hidden_enabled_provider.provider_id
+        params = [("next", "/courses/something/?tpa_hint={0}".format(tpa_hint))]
+        response = self.client.get(reverse('signin_user'), params, HTTP_ACCEPT="text/html")
+        self.assertContains(response, '"third_party_auth_hint": "{0}"'.format(tpa_hint))
+
+        tpa_hint = self.hidden_disabled_provider.provider_id
+        params = [("next", "/courses/something/?tpa_hint={0}".format(tpa_hint))]
+        response = self.client.get(reverse('signin_user'), params, HTTP_ACCEPT="text/html")
+        self.assertNotIn(response.content, tpa_hint)
+
+    def test_hinted_login_dialog_disabled(self):
+        """Test that the dialog doesn't show up for hinted logins when disabled. """
+        self.google_provider.skip_hinted_login_dialog = True
+        self.google_provider.save()
+        params = [("next", "/courses/something/?tpa_hint=oa2-google-oauth2")]
+        response = self.client.get(reverse('signin_user'), params, HTTP_ACCEPT="text/html")
+        self.assertRedirects(
+            response,
+            'auth/login/google-oauth2/?auth_entry=login&next=%2Fcourses%2Fsomething%2F%3Ftpa_hint%3Doa2-google-oauth2',
+            target_status_code=302
+        )
 
     @override_settings(SITE_NAME=settings.MICROSITE_TEST_HOSTNAME)
     def test_microsite_uses_old_login_page(self):
