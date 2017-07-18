@@ -93,8 +93,8 @@ def login_and_registration_form(request, initial_mode="login"):
                     )
                 third_party_auth_hint = provider_id
                 initial_mode = "hinted_login"
-        except (KeyError, ValueError, IndexError):
-            pass
+        except (KeyError, ValueError, IndexError) as ex:
+            log.error("Unknown tpa_hint provider: %s", ex)
 
     set_enterprise_branding_filter_param(request=request, provider_id=third_party_auth_hint)
 
