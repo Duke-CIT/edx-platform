@@ -84,12 +84,10 @@ pymongo==2.9.1
 python-memcached==1.48
 python-openid==2.2.5
 python-dateutil==2.1
-
-# This module gets monkey-patched in third_party_auth.py to fix a Django 1.8 incompatibility.
-# When this dependency gets upgraded, the monkey patch should be removed, if possible.
-# We can also remove the fix to auth_url in third_party_auth/saml.py when that fix is included upstream.
-python-social-auth==0.2.12
-
+# We need to be able to set a maximum session length on our third-party auth providers;
+# our goal is to upstream these changes and return to the canonical version ASAP.
+# python-social-auth==0.2.21
+git+https://github.com/edx/python-social-auth@758985102cee98f440fae44ed99617b7cfef3473#egg=python-social-auth==0.2.21.edx.a
 pytz==2016.7
 pysrt==0.4.7
 PyYAML==3.10

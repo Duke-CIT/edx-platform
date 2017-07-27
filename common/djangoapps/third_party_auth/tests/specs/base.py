@@ -143,7 +143,7 @@ class IntegrationTestMixin(object):
         """
         raise NotImplementedError
 
-    def _test_return_login(self, user_is_activated=True):
+    def _test_return_login(self, user_is_activated=True, previous_session_timed_out=False):
         """ Test logging in to an account that is already linked. """
         # Make sure we're not logged in:
         dashboard_response = self.client.get(reverse('dashboard'))
@@ -155,12 +155,14 @@ class IntegrationTestMixin(object):
         # The user should be redirected to the provider:
         self.assertEqual(try_login_response.status_code, 302)
         login_response = self.do_provider_login(try_login_response['Location'])
-        # There will be one weird redirect required to set the login cookie:
-        self.assertEqual(login_response.status_code, 302)
-        self.assertEqual(login_response['Location'], self.url_prefix + self.complete_url)
-        # And then we should be redirected to the dashboard:
-        login_response = self.client.get(login_response['Location'])
-        self.assertEqual(login_response.status_code, 302)
+        # If the previous session was manually logged out, there will be one weird redirect
+        # required to set the login cookie (it sticks around if the main session times out):
+        if not previous_session_timed_out:
+            self.assertEqual(login_response.status_code, 302)
+            self.assertEqual(login_response['Location'], self.url_prefix + self.complete_url)
+            # And then we should be redirected to the dashboard:
+            login_response = self.client.get(login_response['Location'])
+            self.assertEqual(login_response.status_code, 302)
         if user_is_activated:
             url_expected = reverse('dashboard')
         else:
@@ -248,7 +250,7 @@ class IntegrationTest(testutil.TestCase, test.TestCase):
         self.assertEqual(302, response.status_code)
         self.assertTrue(response.has_header('Location'))
 
-    def assert_register_response_in_pipeline_looks_correct(self, response, pipeline_kwargs):
+    def assert_register_response_in_pipeline_looks_correct(self, response, pipeline_kwargs, required_fields):
         """Performs spot checks of the rendered register.html page.
 
         When we display the new account registration form after the user signs
@@ -264,9 +266,10 @@ class IntegrationTest(testutil.TestCase, test.TestCase):
         self.assertIn('successfully signed in with <strong>%s</strong>' % self.provider.name, response.content)
         # Expect that each truthy value we've prepopulated the register form
         # with is actually present.
-        for prepopulated_form_value in self.provider.get_register_form_data(pipeline_kwargs).values():
-            if prepopulated_form_value:
-                self.assertIn(prepopulated_form_value, response.content)
+        form_field_data = self.provider.get_register_form_data(pipeline_kwargs)
+        for prepopulated_form_data in form_field_data:
+            if prepopulated_form_data in required_fields:
+                self.assertIn(form_field_data[prepopulated_form_data], response.content)
 
     # Implementation details and actual tests past this point -- no more
     # configuration needed.
@@ -412,8 +415,10 @@ class IntegrationTest(testutil.TestCase, test.TestCase):
     def assert_redirect_to_dashboard_looks_correct(self, response):
         """Asserts a response would redirect to /dashboard."""
         self.assertEqual(302, response.status_code)
+        # NOTE: Ideally we should use assertRedirects(), however it errors out due to the hostname, testserver,
+        # not being properly set. This may be an issue with the call made by PSA, but we are not certain.
         # pylint: disable=protected-access
-        self.assertEqual(auth_settings._SOCIAL_AUTH_LOGIN_REDIRECT_URL, response.get('Location'))
+        self.assertTrue(response.get('Location').endswith(django_settings.SOCIAL_AUTH_LOGIN_REDIRECT_URL))
 
     def assert_redirect_to_login_looks_correct(self, response):
         """Asserts a response would redirect to /login."""
@@ -817,7 +822,10 @@ class IntegrationTest(testutil.TestCase, test.TestCase):
         # fire off the view that displays the registration form.
         with self._patch_edxmako_current_request(request):
             self.assert_register_response_in_pipeline_looks_correct(
-                student_views.register_user(strategy.request), pipeline.get(request)['kwargs'])
+                student_views.register_user(strategy.request),
+                pipeline.get(request)['kwargs'],
+                ['name', 'username', 'email']
+            )
 
         # Next, we invoke the view that handles the POST. Not all providers
         # supply email. Manually add it as the user would have to; this
@@ -886,7 +894,10 @@ class IntegrationTest(testutil.TestCase, test.TestCase):
 
         with self._patch_edxmako_current_request(request):
             self.assert_register_response_in_pipeline_looks_correct(
-                student_views.register_user(strategy.request), pipeline.get(request)['kwargs'])
+                student_views.register_user(strategy.request),
+                pipeline.get(request)['kwargs'],
+                ['name', 'username', 'email']
+            )
 
         with self._patch_edxmako_current_request(strategy.request):
             strategy.request.POST = self.get_registration_post_vars()

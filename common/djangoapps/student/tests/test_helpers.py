@@ -2,9 +2,14 @@
 
 import logging
 
+import ddt
+from django.conf import settings
+from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.urlresolvers import reverse
 from django.test import TestCase
 from django.test.client import RequestFactory
+from django.test.utils import override_settings
+from mock import patch
 from testfixtures import LogCapture
 
 from student.helpers import get_next_url_for_login_page
@@ -13,13 +18,39 @@ from student.helpers import get_next_url_for_login_page
 LOGGER_NAME = "student.helpers"
 
 
+@ddt.ddt
 class TestLoginHelper(TestCase):
     """Test login helper methods."""
+    static_url = settings.STATIC_URL
+
     def setUp(self):
         super(TestLoginHelper, self).setUp()
         self.request = RequestFactory()
 
-    def test_unsafe_next(self):
+    @staticmethod
+    def _add_session(request):
+        """Annotate the request object with a session"""
+        middleware = SessionMiddleware()
+        middleware.process_request(request)
+        request.session.save()
+
+    @ddt.data(
+        ("https://www.amazon.com", "text/html", None,
+         "Unsafe redirect parameter detected after login page: u'https://www.amazon.com'"),
+        ("favicon.ico", "image/*", "test/agent",
+         "Redirect to non html content 'image/*' detected from 'test/agent' after login page: u'favicon.ico'"),
+        ("https://www.test.com/test.jpg", "image/*", None,
+         "Unsafe redirect parameter detected after login page: u'https://www.test.com/test.jpg'"),
+        (static_url + "dummy.png", "image/*", "test/agent",
+         "Redirect to non html content 'image/*' detected from 'test/agent' after login page: u'" + static_url +
+         "dummy.png" + "'"),
+        ("test.png", "text/html", None,
+         "Redirect to url path with specified filed type 'image/png' not allowed: u'test.png'"),
+        (static_url + "dummy.png", "text/html", None,
+         "Redirect to url path with specified filed type 'image/png' not allowed: u'" + static_url + "dummy.png" + "'"),
+    )
+    @ddt.unpack
+    def test_unsafe_next(self, unsafe_url, http_accept, user_agent, expected_log):
         """ Test unsafe next parameter """
         unsafe_url = "https://www.amazon.com"
         with LogCapture(LOGGER_NAME, level=logging.ERROR) as logger:
@@ -34,3 +65,31 @@ class TestLoginHelper(TestCase):
         req = self.request.get(reverse("login") + "?next={url}".format(url="/dashboard"))
         next_page = get_next_url_for_login_page(req)
         self.assertEqual(next_page, u'/dashboard')
+
+    @patch('student.helpers.third_party_auth.pipeline.get')
+    @ddt.data(
+        # Test requests outside the TPA pipeline - tpa_hint should be added.
+        (None, '/dashboard', '/dashboard', False),
+        ('', '/dashboard', '/dashboard', False),
+        ('', '/dashboard?tpa_hint=oa2-google-oauth2', '/dashboard?tpa_hint=oa2-google-oauth2', False),
+        ('saml-idp', '/dashboard', '/dashboard?tpa_hint=saml-idp', False),
+        # THIRD_PARTY_AUTH_HINT can be overridden via the query string
+        ('saml-idp', '/dashboard?tpa_hint=oa2-google-oauth2', '/dashboard?tpa_hint=oa2-google-oauth2', False),
+
+        # Test requests inside the TPA pipeline - tpa_hint should not be added, preventing infinite loop.
+        (None, '/dashboard', '/dashboard', True),
+        ('', '/dashboard', '/dashboard', True),
+        ('', '/dashboard?tpa_hint=oa2-google-oauth2', '/dashboard?tpa_hint=oa2-google-oauth2', True),
+        ('saml-idp', '/dashboard', '/dashboard', True),
+        # OK to leave tpa_hint overrides in place.
+        ('saml-idp', '/dashboard?tpa_hint=oa2-google-oauth2', '/dashboard?tpa_hint=oa2-google-oauth2', True),
+    )
+    @ddt.unpack
+    def test_third_party_auth_hint(self, tpa_hint, next_url, expected_url, running_pipeline, mock_running_pipeline):
+        with override_settings(FEATURES=dict(settings.FEATURES, THIRD_PARTY_AUTH_HINT=tpa_hint)):
+            mock_running_pipeline.return_value = running_pipeline
+            req = self.request.get(reverse("login") + "?next={url}".format(url=next_url))
+            req.META["HTTP_ACCEPT"] = "text/html"  # pylint: disable=no-member
+            self._add_session(req)
+            next_page = get_next_url_for_login_page(req)
+            self.assertEqual(next_page, expected_url)
